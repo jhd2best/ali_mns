@@ -5,8 +5,8 @@ import (
 	"io/ioutil"
 	"time"
 
-	"github.com/gogap/ali_mns"
 	"github.com/gogap/logs"
+	"github.com/jhd2best/ali_mns"
 )
 
 type appConf struct {

@@ -21,23 +21,25 @@ type AliMNSQueue interface {
 	Name() string
 	SendMessage(message MessageSendRequest) (resp MessageSendResponse, err error)
 	BatchSendMessage(messages ...MessageSendRequest) (resp BatchMessageSendResponse, err error)
-	ReceiveMessage(respChan chan MessageReceiveResponse, errChan chan error, waitseconds ...int64)
+	ReceiveMessage(respChan chan MessageReceiveResponse, errChan chan error, endChan chan int32)
 	BatchReceiveMessage(respChan chan BatchMessageReceiveResponse, errChan chan error, numOfMessages int32, waitseconds ...int64)
 	PeekMessage(respChan chan MessageReceiveResponse, errChan chan error)
 	BatchPeekMessage(respChan chan BatchMessageReceiveResponse, errChan chan error, numOfMessages int32)
 	DeleteMessage(receiptHandle string) (err error)
 	BatchDeleteMessage(receiptHandles ...string) (err error)
 	ChangeMessageVisibility(receiptHandle string, visibilityTimeout int64) (resp MessageVisibilityChangeResponse, err error)
+	SetReceiveWaitTime(waitTime int64)
 	Stop()
 }
 
 type MNSQueue struct {
-	name       string
-	client     MNSClient
-	stopChan   chan bool
-	qpsLimit   int32
-	qpsMonitor *QPSMonitor
-	decoder    MNSDecoder
+	name            string
+	client          MNSClient
+	stopChan        chan bool
+	qpsLimit        int32
+	qpsMonitor      *QPSMonitor
+	decoder         MNSDecoder
+	receiveWaitTime int64
 }
 
 func NewMNSQueue(name string, client MNSClient, qps ...int32) AliMNSQueue {
@@ -51,6 +53,7 @@ func NewMNSQueue(name string, client MNSClient, qps ...int32) AliMNSQueue {
 	queue.stopChan = make(chan bool)
 	queue.qpsLimit = DefaultQPSLimit
 	queue.decoder = NewAliMNSDecoder()
+	queue.receiveWaitTime = 3
 
 	if qps != nil && len(qps) == 1 && qps[0] > 0 {
 		queue.qpsLimit = qps[0]
@@ -98,14 +101,18 @@ func (p *MNSQueue) Stop() {
 	p.stopChan <- true
 }
 
-func (p *MNSQueue) ReceiveMessage(respChan chan MessageReceiveResponse, errChan chan error, waitseconds ...int64) {
-	resource := fmt.Sprintf("queues/%s/%s", p.name, "messages")
-	if waitseconds != nil && len(waitseconds) == 1 && waitseconds[0] >= 0 {
-		resource = fmt.Sprintf("queues/%s/%s?waitseconds=%d", p.name, "messages", waitseconds[0])
-	}
+func (p *MNSQueue) SetReceiveWaitTime(waitTime int64) {
+	p.receiveWaitTime = waitTime
+}
 
+func (p *MNSQueue) ReceiveMessage(respChan chan MessageReceiveResponse, errChan chan error, endChan chan int32) {
 	for {
 		resp := MessageReceiveResponse{}
+		//动态变化长轮训间隔
+		resource := fmt.Sprintf("queues/%s/%s", p.name, "messages")
+		if p.receiveWaitTime > 0 {
+			resource = fmt.Sprintf("queues/%s/%s?waitseconds=%d", p.name, "messages", p.receiveWaitTime)
+		}
 		_, err := send(p.client, p.decoder, GET, nil, nil, resource, &resp)
 		if err != nil {
 			errChan <- err
@@ -123,7 +130,7 @@ func (p *MNSQueue) ReceiveMessage(respChan chan MessageReceiveResponse, errChan 
 		default:
 		}
 	}
-
+	endChan <- 1
 	return
 }
 
